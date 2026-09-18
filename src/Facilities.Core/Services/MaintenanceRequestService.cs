@@ -56,7 +56,11 @@ public class MaintenanceRequestService
         if (_currentUser.Role == UserRole.Requester)
             query = query.Where(r => r.RequestedByUserId == _currentUser.UserId);
 
-        return await query.OrderByDescending(r => r.CreatedAt).ToListAsync(ct);
+        // Ordered client-side rather than via ORDER BY: SQLite (used in tests) can't
+        // translate ordering on DateTimeOffset, and per-org request volumes here are
+        // small enough that this isn't a real cost in Postgres either.
+        var requests = await query.ToListAsync(ct);
+        return requests.OrderByDescending(r => r.CreatedAt).ToList();
     }
 
     public async Task<MaintenanceRequest> GetByIdAsync(Guid id, CancellationToken ct = default)

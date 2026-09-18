@@ -1,6 +1,7 @@
 using Facilities.Core.Abstractions;
 using Facilities.Core.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Facilities.Infrastructure.Persistence;
 
@@ -37,5 +38,25 @@ public class AppDbContext : DbContext, IAppDbContext
         modelBuilder.Entity<User>().HasQueryFilter(u => u.OrganisationId == _currentUser.OrganisationId);
         modelBuilder.Entity<MaintenanceRequest>().HasQueryFilter(r => r.OrganisationId == _currentUser.OrganisationId);
         modelBuilder.Entity<AuditLogEntry>().HasQueryFilter(a => a.OrganisationId == _currentUser.OrganisationId);
+
+        // String check (rather than the IsSqlite() extension) so Infrastructure doesn't
+        // need a package reference to the SQLite provider just for this test-only branch.
+        if (Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
+        {
+            // SQLite has no native DateTimeOffset comparison/ordering support; Postgres
+            // (via Npgsql) does, so this conversion is applied only for the SQLite
+            // provider used by the test suite. See SqliteTestDatabase in Facilities.Tests.
+            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+            {
+                var dateTimeOffsetProperties = entityType.ClrType.GetProperties()
+                    .Where(p => p.PropertyType == typeof(DateTimeOffset) || p.PropertyType == typeof(DateTimeOffset?));
+
+                foreach (var property in dateTimeOffsetProperties)
+                {
+                    modelBuilder.Entity(entityType.Name).Property(property.Name)
+                        .HasConversion(new DateTimeOffsetToBinaryConverter());
+                }
+            }
+        }
     }
 }

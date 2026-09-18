@@ -31,16 +31,23 @@ public class SpendReportService
             .Where(r => r.OrganisationId == _currentUser.OrganisationId
                         && r.Status == RequestStatus.Completed
                         && r.CompletedAt >= from
-                        && r.CompletedAt <= to)
-            .Join(_db.Sites.AsNoTracking(), r => r.SiteId, s => s.Id, (r, s) => new { r.SiteId, s.Name, r.ActualCost });
+                        && r.CompletedAt <= to);
 
         if (siteId is not null)
-            query = query.Where(x => x.SiteId == siteId);
+            query = query.Where(r => r.SiteId == siteId);
 
-        return await query
-            .GroupBy(x => new { x.SiteId, x.Name })
-            .Select(g => new SiteSpendSummary(g.Key.SiteId, g.Key.Name, g.Sum(x => x.ActualCost!.Value), g.Count()))
+        // The Where/filtering above runs server-side; only the final grouping and
+        // aggregation happen client-side (per-org completed-request volumes are small
+        // — see DECISIONS.md on out-of-scope performance tuning). This also sidesteps
+        // a real gap between providers: the SQLite provider used in tests can't
+        // translate this Join+GroupBy shape that Postgres handles natively.
+        var completedRequests = await query.Select(r => new { r.SiteId, r.ActualCost }).ToListAsync(ct);
+        var siteNames = await _db.Sites.AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, ct);
+
+        return completedRequests
+            .GroupBy(r => r.SiteId)
+            .Select(g => new SiteSpendSummary(g.Key, siteNames.GetValueOrDefault(g.Key, "Unknown"), g.Sum(r => r.ActualCost!.Value), g.Count()))
             .OrderBy(s => s.SiteName)
-            .ToListAsync(ct);
+            .ToList();
     }
 }
