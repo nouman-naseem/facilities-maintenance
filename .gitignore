@@ -1,0 +1,25 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## Rider / VS
+.vs/
+.idea/
+*.DotSettings.user
+
+## Secrets — never commit
+**/appsettings.Development.json
+**/appsettings.Local.json
+.env
+*.pfx
+
+## EF Core
+*.db
+*.db-shm
+*.db-wal
+
+## Misc
+*.log
+.DS_Store
