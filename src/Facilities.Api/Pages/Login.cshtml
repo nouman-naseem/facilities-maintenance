@@ -1,0 +1,32 @@
+@page
+@model Facilities.Api.Pages.LoginModel
+@{
+    ViewData["Title"] = "Log in";
+}
+
+<h1>Log in</h1>
+
+@if (Model.Error is not null)
+{
+    <p class="error">@Model.Error</p>
+}
+
+<form method="post">
+    <div>
+        <label>Email</label><br />
+        <input asp-for="Input.Email" />
+        <span asp-validation-for="Input.Email" class="error"></span>
+    </div>
+    <div>
+        <label>Password</label><br />
+        <input asp-for="Input.Password" type="password" />
+        <span asp-validation-for="Input.Password" class="error"></span>
+    </div>
+    <p><button type="submit">Log in</button></p>
+</form>
+
+<p>
+    Demo accounts (password <code>Password123!</code> for all):<br />
+    Acme Facilities — requester@acme.test (Requester), approver@acme.test (Approver)<br />
+    Northwind Property Group — requester@northwind.test (Requester), approver@northwind.test (Approver)
+</p>

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Facilities Maintenance</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; max-width: 900px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+        th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; }
+        .error { color: #b00020; }
+        .badge { padding: 0.1rem 0.5rem; border-radius: 4px; background: #eee; font-size: 0.85em; }
+        form.inline { display: inline; }
+        fieldset { margin-bottom: 1.5rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <strong>Facilities Maintenance</strong>
+        @if (User.Identity?.IsAuthenticated == true)
+        {
+            <span> — signed in as @User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value (@User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value)</span>
+            <form method="post" asp-page="/Logout" class="inline">
+                <button type="submit">Log out</button>
+            </form>
+        }
+    </header>
+    <hr />
+    @RenderBody()
+</body>
+</html>

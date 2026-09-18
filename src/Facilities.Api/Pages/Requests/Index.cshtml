@@ -1,0 +1,105 @@
+@page
+@using Facilities.Core.Enums
+@model Facilities.Api.Pages.Requests.IndexModel
+@{
+    ViewData["Title"] = "Maintenance requests";
+    var siteNames = Model.Sites.ToDictionary(s => s.Id, s => s.Name);
+}
+
+<h1>Maintenance requests</h1>
+
+@if (Model.IsApprover)
+{
+    <p><a asp-page="/Reports/Index">Spend report</a></p>
+}
+
+@if (Model.Message is not null)
+{
+    <p><strong>@Model.Message</strong></p>
+}
+@if (Model.Error is not null)
+{
+    <p class="error">@Model.Error</p>
+}
+
+<fieldset>
+    <legend>Raise a new request</legend>
+    <form method="post" asp-page-handler="Create">
+        <div>
+            <label>Site</label><br />
+            <select asp-for="NewRequest.SiteId">
+                @foreach (var site in Model.Sites)
+                {
+                    <option value="@site.Id">@site.Name</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label>Description</label><br />
+            <textarea asp-for="NewRequest.Description" rows="2" cols="50"></textarea>
+        </div>
+        <div>
+            <label>Estimated cost</label><br />
+            <input asp-for="NewRequest.EstimatedCost" type="number" step="0.01" min="0.01" />
+        </div>
+        <p><button type="submit">Submit request</button></p>
+    </form>
+</fieldset>
+
+<table>
+    <thead>
+        <tr>
+            <th>Site</th>
+            <th>Description</th>
+            <th>Estimated</th>
+            <th>Actual</th>
+            <th>Status</th>
+            <th>Requested by</th>
+            <th>Created</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var r in Model.Requests)
+        {
+            <tr>
+                <td>@siteNames.GetValueOrDefault(r.SiteId, "—")</td>
+                <td>@r.Description</td>
+                <td>@r.EstimatedCost.ToString("C")</td>
+                <td>@(r.ActualCost?.ToString("C") ?? "—")</td>
+                <td>
+                    <span class="badge">@r.Status</span>
+                    @if (r.ExceedsApprovedThreshold)
+                    {
+                        <span class="badge error">over threshold</span>
+                    }
+                </td>
+                <td>@Model.UserEmailsById.GetValueOrDefault(r.RequestedByUserId, "—")</td>
+                <td>@r.CreatedAt.ToLocalTime().ToString("g")</td>
+                <td>
+                    @if (Model.IsApprover && r.Status == RequestStatus.PendingApproval && r.RequestedByUserId != Model.CurrentUserId)
+                    {
+                        <form method="post" asp-page-handler="Approve" asp-route-id="@r.Id" class="inline">
+                            <button type="submit">Approve</button>
+                        </form>
+                        <form method="post" asp-page-handler="Reject" asp-route-id="@r.Id" class="inline">
+                            <input type="text" name="reason" placeholder="Reason (optional)" size="12" />
+                            <button type="submit">Reject</button>
+                        </form>
+                    }
+                    else if (r.Status == RequestStatus.Approved)
+                    {
+                        <form method="post" asp-page-handler="Complete" asp-route-id="@r.Id" class="inline">
+                            <input type="number" name="actualCost" step="0.01" min="0.01" placeholder="Actual cost" size="8" required />
+                            <button type="submit">Mark complete</button>
+                        </form>
+                    }
+                    else
+                    {
+                        @:—
+                    }
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

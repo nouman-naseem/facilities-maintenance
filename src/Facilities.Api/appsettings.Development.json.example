@@ -1,0 +1,14 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "ConnectionStrings": {
+    "Default": "Host=localhost;Port=5432;Database=facilities;Username=facilities;Password=facilities_dev_password"
+  },
+  "Jwt": {
+    "SigningKey": "local-dev-only-signing-key-do-not-use-in-production-6f1a9c3e"
+  }
+}

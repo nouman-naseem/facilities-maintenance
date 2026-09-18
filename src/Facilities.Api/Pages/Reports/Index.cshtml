@@ -1,0 +1,63 @@
+@page
+@model Facilities.Api.Pages.Reports.IndexModel
+@{
+    ViewData["Title"] = "Spend report";
+}
+
+<h1>Spend report</h1>
+<p><a asp-page="/Requests/Index">Back to requests</a></p>
+
+<form method="get">
+    <label>From</label>
+    <input type="date" name="from" value="@Model.From.ToString("yyyy-MM-dd")" />
+    <label>To</label>
+    <input type="date" name="to" value="@Model.To.ToString("yyyy-MM-dd")" />
+    <label>Site</label>
+    <select name="siteId">
+        <option value="">All sites</option>
+        @foreach (var site in Model.Sites)
+        {
+            <option value="@site.Id" selected="@(Model.SiteId == site.Id)">@site.Name</option>
+        }
+    </select>
+    <button type="submit">Run</button>
+</form>
+
+@if (Model.Error is not null)
+{
+    <p class="error">@Model.Error</p>
+}
+
+<table>
+    <thead>
+        <tr>
+            <th>Site</th>
+            <th>Completed requests</th>
+            <th>Total spend</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var row in Model.Results)
+        {
+            <tr>
+                <td>@row.SiteName</td>
+                <td>@row.CompletedRequestCount</td>
+                <td>@row.TotalActualCost.ToString("C")</td>
+            </tr>
+        }
+        @if (Model.Results.Count == 0)
+        {
+            <tr><td colspan="3">No completed requests in this range.</td></tr>
+        }
+    </tbody>
+    @if (Model.Results.Count > 0)
+    {
+        <tfoot>
+            <tr>
+                <th>Total</th>
+                <th>@Model.Results.Sum(r => r.CompletedRequestCount)</th>
+                <th>@Model.Results.Sum(r => r.TotalActualCost).ToString("C")</th>
+            </tr>
+        </tfoot>
+    }
+</table>
