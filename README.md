@@ -52,12 +52,9 @@ tenant isolation directly — Acme's users can never see Northwind's requests or
 dotnet test
 ```
 
-> **Known environment caveat:** on a machine with Windows *Smart App Control* enabled,
-> the test host can be blocked from loading freshly built, unsigned DLLs via reflection
-> (Code Integrity policy) — this affects test discovery specifically, not the app itself
-> (`dotnet run` is unaffected). This was hit during development; see AI-LOG.md. If you
-> hit it, `dotnet test` will fail with `FileLoadException: ... Application Control policy
-> ...` rather than a test failure — that's this, not a bug in the code.
+Uses xUnit v3's Microsoft.Testing.Platform runner (`global.json` opts `dotnet test`
+into the new .NET 10 MTP mode) rather than the legacy VSTest pipeline — see AI-LOG.md
+for why that switch happened mid-build.
 
 ## Secrets
 

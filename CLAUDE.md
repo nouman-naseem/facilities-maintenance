@@ -50,8 +50,9 @@ this (e.g. `Core` referencing `Infrastructure` or `Api`).
 
 ## Testing
 
-`dotnet test` runs the suite (xUnit v3, self-hosted runner — see AI-LOG.md for why not
-the classic VSTest pipeline). Tests use a shared in-memory SQLite connection
+`dotnet test` runs the suite (xUnit v3 on Microsoft.Testing.Platform, opted in via
+`global.json` — see AI-LOG.md for why not the classic VSTest pipeline). Tests use a
+shared in-memory SQLite connection
 (`SqliteTestDatabase`) so multiple `AppDbContext` instances — one per simulated
 user/tenant — see the same schema; this exercises the real EF global query filters
 rather than a mock of them. When adding a tenant-scoped entity/query, add a test that

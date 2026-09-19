@@ -39,50 +39,59 @@ Razor Pages, tests) was then genuinely full delegation against that approved spe
 ## What I did by hand
 
 Reviewed and approved the design document before implementation started (the actual
-gate, not a formality — I could have sent it back). Mid-implementation, the agent hit a
-real environment blocker (see below) and explicitly stopped to ask rather than either
-guessing or silently weakening machine security to route around it; I made the call
-(skip local test verification here, document it, verify `dotnet test` elsewhere) rather
-than letting the agent decide unilaterally to touch Smart App Control.
+gate, not a formality — I could have sent it back). The dev sandbox turned out to be
+unusually hostile to local .NET work — Smart App Control blocking the test host, no
+WSL2 (so Docker/Postgres couldn't start), and the .NET SDK itself getting removed
+mid-session by what looks like active endpoint management. At each point the agent
+stopped and asked rather than quietly working around a security control (e.g. it
+explicitly refused to weaken Smart App Control itself, correctly pointing out it has no
+per-folder exclusion, only a global off-switch). I made the calls: install PostgreSQL
+natively instead of chasing Docker/WSL, and reinstall the SDK when it vanished. I
+provided the Postgres superuser password directly in chat to unblock setup — in
+hindsight the agent was right to initially decline to ask for it and offer a
+password-free path instead; a real handoff should avoid that channel entirely.
 
 ## Plausible but wrong
 
-While writing `SpendReportServiceTests.GetSpendBySiteAsync_SumsOnlyCompletedRequestsWithinRangeForCallersOrganisation`,
-the agent simulated a "user from a different organisation" with `UserId = Guid.NewGuid()`
-— a fresh, never-persisted ID — then used that context to call
+**The one that actually broke a real endpoint, not just a test:** `LoginRequest`,
+`CreateRequestDto`, etc. were written as records with validation attributes like
+`[property: Required, EmailAddress] string Email`. This compiles cleanly, looks correct,
+and is a pattern that shows up in plenty of real ASP.NET Core codebases and tutorials.
+It only failed at *runtime*, on the very first live login attempt during manual
+verification: `InvalidOperationException: Record type 'LoginRequest' has validation
+metadata defined on property 'Password' that will be ignored... validation metadata
+must be associated with the constructor parameter.` ASP.NET Core's model validation
+requires the attribute on the record's primary-constructor parameter directly, not via
+`[property: ...]`, and will only tell you at request time, not at compile time or via
+`dotnet build`. No unit or service-level test caught this, because none of them go
+through ASP.NET Core's model-binding/validation pipeline — that pipeline only runs for
+real HTTP requests. **Caught by:** manually exercising the login endpoint with `curl`
+after standing up a real Postgres instance, not by any automated check. Fixed by
+dropping `property:` so the attributes target the constructor parameter
+(`src/Facilities.Api/Contracts/AuthContracts.cs`, `RequestContracts.cs`). This is the
+strongest argument in this whole exercise for actually running the app rather than
+trusting a green build.
+
+**A smaller one, caught by the test suite itself:** in
+`SpendReportServiceTests`, the agent simulated a "user from a different organisation"
+with `UserId = Guid.NewGuid()` — never persisted — then used that context to call
 `MaintenanceRequestService.CreateAsync`, which writes a `MaintenanceRequest` row with
-`RequestedByUserId` set to that ID. `MaintenanceRequest.RequestedByUserId` is a real
-foreign key to `Users.Id` (see `MaintenanceRequestConfiguration.cs`), so this failed at
-`SaveChangesAsync` with `SQLite Error 19: FOREIGN KEY constraint failed` — not a test
-assertion failure, a database-level exception with a generic message.
+that ID as a real foreign key to `Users`. Failed at `SaveChangesAsync` with a generic
+`FOREIGN KEY constraint failed`, not an assertion. Easy to miss because the sibling
+isolation-test file uses the identical `Guid.NewGuid()` idiom correctly — there, the
+fake ID is only ever read for a filter comparison, never persisted. Fixed by seeding a
+real `User` row for the other organisation first.
 
-**Why it was easy to miss:** the sibling test file
-(`MaintenanceRequestServiceTenantIsolationTests.cs`) uses the exact same
-`Guid.NewGuid()` pattern for a `UserId` in two places (`ListAsync_...` and
-`ApproveAsync_ByRequesterRole_ThrowsForbidden`) — and it's *correct* there, because
-those code paths only ever read `_currentUser.UserId` for a filter comparison; they
-never write it as a foreign key. The spend-report test looked identical at a glance —
-same helper class, same "fake user for a different org" idiom — but this one path
-(`CreateAsync`) is the one place that persists the value. Nothing about reading the test
-in isolation flags the difference; it only surfaces by actually running it against a
-real (if in-memory) database with FK enforcement on, which is exactly why the test
-double uses a real EF Core provider instead of a mock.
+## Environment friction (resolved, not swept under the rug)
 
-**Caught by:** running `dotnet test` and reading the stack trace down to
-`MaintenanceRequestService.CreateAsync` — fixed by persisting a real `User` row for the
-other organisation first, matching the pattern in the isolation tests
-(`tests/Facilities.Tests/Services/SpendReportServiceTests.cs`).
-
-## An environment issue the agent surfaced rather than papering over
-
-`dotnet test` on the development machine hit `FileLoadException: ... An Application
-Control policy has blocked this file`. Rather than assume a code bug, the agent checked
-the Windows Code Integrity event log (`Microsoft-Windows-CodeIntegrity/Operational`),
-confirmed it was Smart App Control blocking `testhost.exe` from loading unsigned build
-output via reflection — and, notably, that `dotnet run` for the actual app loaded the
-identical DLL without issue, isolating the block to test *discovery* specifically. It
-tried a legitimate alternative (xUnit v3's self-hosted runner, which skips the separate
-`testhost.exe` process) before concluding the block was per-DLL, not per-host-process,
-and stopped there rather than proposing to weaken machine security to route around it —
-that call was left to me. Documented as a known caveat in README.md rather than quietly
-skipped.
+`dotnet test` initially failed with `FileLoadException: ... An Application Control
+policy has blocked this file`. Checked the Windows Code Integrity event log directly
+rather than guessing — confirmed Smart App Control was blocking `testhost.exe` from
+loading unsigned build output via reflection, and specifically only during test
+*discovery* (`dotnet run` loaded the identical DLL fine). Migrated the test project from
+`xunit` + VSTest to `xunit.v3` + Microsoft.Testing.Platform, which was going to be worth
+doing anyway (it's the modern, actively-developed path) and incidentally avoids the
+separate `testhost.exe` process. Later, .NET 10's `dotnet test` needed one more nudge —
+a `global.json` with `"test": {"runner": "Microsoft.Testing.Platform"}` — since .NET 10
+dropped implicit VSTest-mode support for MTP projects. All 14 tests now pass via plain
+`dotnet test`.
