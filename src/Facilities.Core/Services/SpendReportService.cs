@@ -27,6 +27,14 @@ public class SpendReportService
         if (from > to)
             throw new ArgumentException("'from' must not be after 'to'.");
 
+        // Postgres's timestamptz columns (via Npgsql) only accept DateTimeOffset values
+        // with a zero UTC offset — a caller passing e.g. a bare "2026-01-01T00:00:00"
+        // without a timezone would otherwise get one interpreted from the server's
+        // local clock. Normalizing here protects every caller (API and Razor Pages)
+        // through one place rather than relying on each call site getting it right.
+        from = from.ToUniversalTime();
+        to = to.ToUniversalTime();
+
         var query = _db.MaintenanceRequests.AsNoTracking()
             .Where(r => r.OrganisationId == _currentUser.OrganisationId
                         && r.Status == RequestStatus.Completed

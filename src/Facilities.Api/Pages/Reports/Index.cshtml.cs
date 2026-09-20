@@ -35,8 +35,15 @@ public class IndexModel : PageModel
 
         try
         {
-            // 'to' is a calendar date from the picker; include the whole day.
-            Results = await _spendReport.GetSpendBySiteAsync(From, To.AddDays(1).AddTicks(-1), SiteId, ct);
+            // The date picker posts a bare "yyyy-MM-dd" with no timezone, which model
+            // binding gives us as DateTime.Kind=Unspecified. Constructing the
+            // DateTimeOffset explicitly with a zero offset treats the picked date as a
+            // UTC calendar boundary; letting the implicit DateTime->DateTimeOffset
+            // conversion do it instead would interpret it as server-local time and
+            // silently shift the range by the server's UTC offset.
+            var fromUtc = new DateTimeOffset(DateTime.SpecifyKind(From, DateTimeKind.Unspecified), TimeSpan.Zero);
+            var toUtc = new DateTimeOffset(DateTime.SpecifyKind(To.AddDays(1).AddTicks(-1), DateTimeKind.Unspecified), TimeSpan.Zero);
+            Results = await _spendReport.GetSpendBySiteAsync(fromUtc, toUtc, SiteId, ct);
         }
         catch (DomainException ex)
         {

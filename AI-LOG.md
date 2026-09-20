@@ -82,6 +82,31 @@ isolation-test file uses the identical `Guid.NewGuid()` idiom correctly — ther
 fake ID is only ever read for a filter comparison, never persisted. Fixed by seeding a
 real `User` row for the other organisation first.
 
+## A third one, found live after "done"
+
+Even after the write-up above was delivered as finished, clicking "Run" on the
+`/Reports` page threw a 500: `Cannot write DateTimeOffset with Offset=05:00:00 to
+PostgreSQL type 'timestamp with time zone', only offset 0 (UTC) is supported.`
+`Pages/Reports/Index.cshtml.cs` bound the date-picker's bare `yyyy-MM-dd` value as
+`DateTime` (`Kind=Unspecified`), then passed it into `SpendReportService.GetSpendBySiteAsync`,
+which takes `DateTimeOffset` — triggering C#'s implicit `DateTime`→`DateTimeOffset`
+conversion, which for `Unspecified` kind assumes **server-local time** and computes the
+offset from the machine's timezone (here, +05:00). Two stacked problems: the picked
+date was silently shifted by the server's UTC offset (a correctness bug, independent of
+Npgsql), and Npgsql separately refuses any non-zero offset for `timestamptz` regardless.
+No test caught this — the test suite runs against SQLite, which doesn't enforce
+Npgsql's offset restriction, so the same code path passes there without exposing
+either problem. **Caught by:** the user actually clicking the button in a browser.
+Fixed by explicitly constructing `DateTimeOffset` with a zero offset at the Razor Pages
+boundary (treating a picked calendar date as UTC, not local time), and defensively
+normalizing via `.ToUniversalTime()` inside `SpendReportService` itself so the JSON API
+path is protected the same way regardless of what offset a caller sends.
+
+This is the same lesson as the login bug, twice: a green build and a passing test
+suite are not the same claim as "the feature works," and the gap between them here was
+specifically in the part neither builds nor unit tests exercise — real framework
+model-binding behavior meeting a real database driver's real constraints.
+
 ## Environment friction (resolved, not swept under the rug)
 
 `dotnet test` initially failed with `FileLoadException: ... An Application Control
