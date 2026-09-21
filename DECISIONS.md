@@ -1,136 +1,94 @@
 # Decisions
 
 ## Architecture
+Three projects — **Api** (controllers + Razor Pages), **Core** (entities, the request
+state machine, application services), **Infrastructure** (EF Core, migrations,
+hashing). Not Clean Architecture/CQRS/MediatR — five entities and ~8 endpoints don't
+justify it.
 
-Three projects — **Api** (controllers + Razor Pages), **Core** (domain entities, the
-request state machine, application services), **Infrastructure** (EF Core, migrations,
-password hashing) — not full Clean Architecture with a domain-event bus, not
-CQRS/MediatR. Five entities and ~8 endpoints don't justify that ceremony; a flat,
-three-project split is something I can fully explain in the review, which a heavier
-pattern chosen "because it's standard" would not be.
+**Rejected:** full ASP.NET Core Identity (two fixed roles, no self-registration/reset —
+used only its `PasswordHasher<T>` utility); FluentValidation (DataAnnotations + entity
+guard clauses cover every rule here); a repository per entity (`IAppDbContext` is one
+seam over EF Core's `DbContext`, already a Unit of Work).
 
-**Rejected:** ASP.NET Core Identity (full system) — this app has two fixed roles, no
-self-registration, no password reset, so the role/claim/token store Identity brings is
-unused weight. Used `Microsoft.AspNetCore.Identity`'s `PasswordHasher<T>` utility class
-only, for its PBKDF2 implementation, and skipped everything else. **Rejected** FluentValidation
-in favour of DataAnnotations + entity guard clauses — no rule complex enough to earn a
-new dependency. **Rejected** a repository interface per entity — `IAppDbContext` is one
-seam over EF Core's DbContext (already a Unit of Work), used only so Core doesn't take a
-package dependency on Npgsql and so tests can swap in SQLite.
-
-## Tenant isolation — two independent layers
-
-1. **EF Core global query filters** (`AppDbContext.OnModelCreating`) scope every
-   tenant-owned table (`Site`, `User`, `MaintenanceRequest`, `AuditLogEntry`) to
-   `ICurrentUserContext.OrganisationId`, sourced from the auth ticket's claims — never
-   from a route/body value. A cross-tenant ID in a URL simply doesn't match any row.
+## Tenant isolation — two layers
+1. **EF Core global query filters** scope every tenant table to
+   `ICurrentUserContext.OrganisationId`, sourced from auth claims, never from request input.
 2. **An explicit re-check in `MaintenanceRequestService`** (`EnsureSameTenant`) after
-   every fetch, returning 404 (not 403) on a mismatch, so a guessed ID from another
-   tenant doesn't even confirm existence. This should be unreachable given (1) — it's
-   there for the day a query legitimately needs `.IgnoreQueryFilters()` (see auth,
-   below) and someone adds a similar call elsewhere without thinking about tenancy.
+   every fetch, returning 404 (not 403) so a cross-tenant guess doesn't confirm
+   existence. Should be unreachable given (1) — it's the backstop for the one place the
+   codebase deliberately bypasses filters (login, see Auth).
 
-`ICurrentUserContext` is implemented once in Api (`HttpContextCurrentUserContext`),
-reading claims that are identical whether the request came in via JWT or the cookie
-(see Auth) — so both front doors get the same isolation guarantee from the same code.
+`ICurrentUserContext` is implemented once, reading claims identical across JWT and
+cookie auth, so both front doors get the same guarantee from the same code.
 
-**Verification:** `MaintenanceRequestServiceTenantIsolationTests` creates two
-organisations against a real (SQLite) EF Core provider and asserts a user from one
-cannot fetch, approve, or list the other's requests. Deliberately not mocked — the
-global query filter is EF Core configuration, and a mock would just assume it works.
+**Verified:** `MaintenanceRequestServiceTenantIsolationTests` against a real (SQLite) EF
+Core provider — not mocked — plus live cross-org `curl` calls during manual testing,
+returning 404/403 as expected.
 
-## Auth: JWT for the API, cookie for the UI, one login path
-
-Both schemes are registered; `/api/*` controllers require the JWT bearer scheme, Razor
-Pages default to the cookie scheme. Both are issued from the same
-`AuthenticationService.ValidateCredentialsAsync` and the same claim set
-(`ClaimsFactory`), so there's exactly one place credentials are checked. Login looks a
-user up by email with `.IgnoreQueryFilters()` — the only deliberate, commented use of it
-in the codebase — because at that point we don't yet know which organisation the caller
-belongs to; email is enforced globally unique for this reason.
-
-**Rejected:** a single scheme for both (e.g. JWT-in-cookie) — would have worked, but
-mixing "the UI is JWT stored in a cookie" is more moving parts than "the UI uses cookie
-auth, the API uses bearer auth," for no benefit at this scope.
+## Auth: JWT for the API, cookie for the UI
+Both issued from the same `AuthenticationService.ValidateCredentialsAsync` and claim
+set, so credentials are checked in one place. Login looks a user up by email with
+`.IgnoreQueryFilters()` — the only deliberate use of it in the codebase, since the
+caller's org isn't known yet; email is enforced globally unique for this reason.
+**Rejected** a single JWT-in-cookie scheme — more moving parts for no benefit here.
 
 ## Request lifecycle
-
-`Raised → PendingApproval → Approved → Completed`, with `Rejected` reachable from
-`PendingApproval`. **Assumption:** `Raised` is not a state that's ever persisted on its
-own — `MaintenanceRequest.Raise()` immediately routes to `PendingApproval` or
-`Approved` (auto) in the same call, based on the threshold. I considered persisting a
-literal `Raised` row first, but that would mean either a second write immediately after
-the first (no real-world value — nothing can act on a request in that split second) or
-an artificial delay. The state machine lives entirely on the entity
-(`MaintenanceRequest.Approve/Reject/Complete`), so an illegal transition is a single,
-easy-to-audit method, not something scattered across services.
-
-**Self-approval** (an approver can't approve their own request) is enforced in the
-entity itself, not just at the controller/policy level — so it holds regardless of
-which front door or future caller invokes it.
+`Raised → PendingApproval → Approved → Completed`, `Rejected` reachable from
+`PendingApproval`. **Assumption:** `Raised` is never persisted standalone —
+`MaintenanceRequest.Raise()` routes to `PendingApproval` or auto-`Approved` in the same
+call; a literal persisted `Raised` row would add a write nothing can act on. The state
+machine lives entirely on the entity (`Approve/Reject/Complete`), so illegal
+transitions are one auditable method, not logic scattered across services.
+**Self-approval** is blocked in the entity itself, not just a policy attribute, so it
+holds regardless of caller.
 
 ## Threshold-based approval
-
-Estimated cost `< organisation threshold` → auto-approved, no human approver
-(`ApprovedByUserId` stays null, `ThresholdAtApproval` is still snapshotted so the audit
-trail is consistent either way). At or above → requires an Approver who isn't the
-requester.
-
-**Assumption — actual cost later exceeds the approved threshold:** completion is
-**not** blocked. The threshold is treated as an estimate-time gate, not a running spend
-cap; blocking a Requester from closing out already-completed physical work over a
-back-office figure seemed like the wrong trade-off, and re-approval-after-the-fact
-wasn't asked for. Instead, `MaintenanceRequest.ExceedsApprovedThreshold` is computed and
-surfaced: the audit entry for that completion is tagged `CompletedOverThreshold`, and
-the flag is visible in the UI badge and the `MaintenanceRequestDto`. This is a genuine
-judgment call I'd confirm with a product owner in a real engagement.
+Below threshold → auto-approved, no human approver. At/above → requires an Approver
+who isn't the requester. **Assumption — actual cost later exceeds the approved
+threshold:** completion is **not** blocked (the threshold is an estimate-time gate, not
+a running cap); instead `ExceedsApprovedThreshold` is computed and surfaced (audit
+action `CompletedOverThreshold`, UI badge, DTO field). A genuine judgment call I'd
+confirm with a product owner in practice.
 
 ## Audit trail
-
-Append-only `AuditLogEntry`, written in the **same `SaveChangesAsync` call** as the
-state change it records (same DbContext instance, same transaction — not a separate
-write that could fail independently). No code path calls `Update`/`Remove` on it.
-**Audit integrity** beyond "the app doesn't expose a way to edit it": in production,
-the app's runtime DB role would have `UPDATE`/`DELETE` revoked on this table at the
-database level, so even a fully compromised app credential couldn't rewrite history —
-documented here rather than scripted into the migration, since there's no production
-deployment target in this exercise to apply it to. **Rejected:** hash-chaining audit
-rows for tamper-evidence — gold-plating for what was asked; noted as a natural next step.
+Append-only, written in the **same `SaveChangesAsync` call** as the state change it
+records — not a separate write that could fail independently. No code path
+updates/deletes it. **Audit integrity** beyond that: in production, the app's DB role
+would have `UPDATE`/`DELETE` revoked on this table — documented rather than scripted,
+since there's no deployment target here. **Rejected** hash-chaining for
+tamper-evidence — gold-plating for this scope.
 
 ## Spend report
+Sums `ActualCost` for `Completed` requests only, by `CompletedAt` — an estimate isn't
+spend yet. Approver-only. Aggregation happens client-side after a server-side filter,
+not a single `GROUP BY`+`JOIN` — a real SQLite-vs-Postgres provider gap surfaced by the
+tests (see AI-LOG.md); fine at this scope's data volumes.
 
-Sums `ActualCost` for `Completed` requests only, grouped by site, filtered by
-`CompletedAt` — an estimate isn't spend yet. Restricted to the `Approver` role (financial
-data). The final grouping/aggregation happens client-side after a server-side filtered
-fetch, not as a single SQL `GROUP BY`+`JOIN` — see AI-LOG.md for why (a real
-SQLite-vs-Postgres provider gap surfaced by the test suite); at the per-org,
-per-date-range volumes this app is scoped for, that's a non-issue, and revisiting it
-if/when it isn't would be a one-method change.
+**Frontend scope note:** the brief's minimum is log in/list/create/approve/reject — I
+also built a "mark complete" action. Not gold-plating: without it, no request could
+ever reach `Completed`, and the spend report (a hard requirement) would have nothing to
+show through the UI.
 
 ## Database: PostgreSQL
-
 Real constraint/transaction support and proper `timestamptz`/`numeric` types for a
-system that's explicitly "handling client financial data," and Docker makes the
-15-minute setup bar trivial. SQLite is used **only** as the test double (see
-`SqliteTestDatabase`) — deliberately not the same provider as production, which is a
-trade-off (a provider-specific SQL bug in Postgres wouldn't be caught by these tests)
-accepted for test speed and zero extra local infrastructure.
+system explicitly "handling client financial data"; Docker makes the 15-minute setup
+bar trivial (verified against both a Docker container and a native install). SQLite is
+used only as the test double — a deliberate trade-off (test speed over provider
+parity), not the production choice.
 
 ## Other ambiguities resolved by assumption
-
-- **Who can complete a request:** either the original Requester or any Approver in the
-  org — the brief doesn't define a "field worker" role distinct from these two.
-- **Visibility:** Requesters see only their own requests; Approvers see all requests in
-  their org (they need the full picture to approve). The spend report is Approver-only.
-- **Org threshold configuration:** seeded, not exposed via an endpoint — the brief
-  defines no Admin role to gate such an endpoint behind, and adding one wasn't asked for.
-- **Terminal states:** `Completed`/`Rejected` don't reopen; a corrected request is
+- **Who can complete a request:** the original Requester or any Approver — no distinct
+  "field worker" role exists in the brief.
+- **Visibility:** Requesters see their own requests; Approvers see all requests in
+  their org; the spend report is Approver-only.
+- **Org threshold:** seeded, not exposed via an endpoint — the brief defines no Admin
+  role to gate one behind.
+- **Terminal states** (`Completed`/`Rejected`) don't reopen; a corrected request is
   resubmitted as new.
 
-## Explicitly not built (and not gold-plated)
-
+## Explicitly not built
 Full ASP.NET Core Identity, FluentValidation, MediatR/CQRS, audit hash-chaining,
-schema/DB-per-tenant isolation, an Admin UI for threshold management, and anything from
-the brief's own out-of-scope list (deployment, notifications, password reset, background
-jobs, file uploads, exhaustive test coverage, performance tuning beyond sensible
-indexing).
+DB-per-tenant isolation, an Admin UI for thresholds, and the brief's own out-of-scope
+list (deployment, notifications, password reset, background jobs, file uploads,
+exhaustive coverage, perf tuning beyond sensible indexing).
